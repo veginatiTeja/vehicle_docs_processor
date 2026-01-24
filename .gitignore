@@ -1,0 +1,12 @@
+# Output files
+output/
+*.pdf
+*.json
+*.txt
+
+# Temp / lock files
+~$*
+
+# Python cache
+__pycache__/
+*.pyc
