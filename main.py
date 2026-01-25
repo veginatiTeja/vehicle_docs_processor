@@ -43,7 +43,7 @@ import re
 from pdf2image import convert_from_path
 import pytesseract
 from pypdf import PdfReader, PdfWriter
-import time   # 🔹 add this at the top of file if not present
+import time   
 from pypdf.generic import NameObject, BooleanObject
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -132,6 +132,29 @@ def fill_vehicle_pdf(template_pdf, output_pdf, vehicle):
 
     print("✅ Auto-filled PDF generated:", output_pdf)
 
+def flatten_pdf(filled_pdf, final_pdf):
+    reader = PdfReader(filled_pdf)
+    page = reader.pages[0]
+
+    c = canvas.Canvas(final_pdf, pagesize=A4)
+    width, height = A4
+
+    c.setFont("Helvetica", 10)
+
+    for annot in page.get("/Annots", []):
+        field = annot.get_object()
+
+        if field.get("/FT") == "/Tx" and field.get("/V"):
+            value = str(field.get("/V"))
+
+            rect = field.get("/Rect")
+            x = rect[0]
+            y = rect[1]
+
+            c.drawString(x + 2, y + 4, value)
+
+    c.save()
+    print("✅ Flattened PDF created:", final_pdf)
 
 def hard_flatten_pdf(filled_pdf, final_pdf, vehicle):
     c = canvas.Canvas(final_pdf, pagesize=A4)
@@ -160,6 +183,36 @@ def hard_flatten_pdf(filled_pdf, final_pdf, vehicle):
     c.save()
     print("✅ HARD-FLATTENED PDF CREATED:", final_pdf)
 
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, BooleanObject
+
+def autofill_used_vehicle_form(template_pdf, output_pdf, vehicle):
+    reader = PdfReader(template_pdf)
+    writer = PdfWriter()
+
+    # ✅ THIS IS CRITICAL
+    writer.clone_document_from_reader(reader)
+
+    # ✅ Force appearance regeneration
+    if "/AcroForm" in writer._root_object:
+        writer._root_object["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
+
+    # ✅ Fill text fields
+    writer.update_page_form_field_values(
+        writer.pages[0],
+        {
+            "model_year": vehicle.get("year", ""),
+            "make": vehicle.get("make", ""),
+            "model": vehicle.get("model", ""),
+            "vin": vehicle.get("vin", ""),
+        }
+    )
+
+    with open(output_pdf, "wb") as f:
+        writer.write(f)
+
+    print("✅ Auto-filled PDF created:", output_pdf)
+
 
 
 
@@ -172,29 +225,33 @@ if __name__ == "__main__":
 
     vehicles = extract_vehicles(ocr_text)
 
+
     # if vehicles:
-    #     fill_vehicle_pdf(
-    #     "templates/vehicle_form.pdf",       # empty form
-    #     "output/filled_vehicle.pdf",        # final output
-    #     vehicles[0]                          # JSON data
+    #     filled_pdf = f"output/used_vehicle_filled_{int(time.time())}.pdf"
+    #     final_pdf = f"output/used_vehicle_final_{int(time.time())}.pdf"
+    #     autofill_used_vehicle_form(
+    #     "templates/used_vehicle_form.pdf",
+    #     filled_pdf,
+    #     vehicles[0]
     # )
-
-    if vehicles:
-        temp_pdf = f"output/temp_filled_{int(time.time())}.pdf"
-        final_pdf = f"output/final_vehicle_{int(time.time())}.pdf"
+    
+    for index, vehicle in enumerate(vehicles, start=1):
+        safe_make = vehicle.get("make", "UNKNOWN").replace(" ", "_")
+        safe_model = vehicle.get("model", "UNKNOWN").replace(" ", "_")
+        safe_year = vehicle.get("year", "YYYY")
         
-        fill_vehicle_pdf(
-        "templates/vehicle_form.pdf",
-        temp_pdf,
-        vehicles[0]
-        )
-        
-        hard_flatten_pdf(
-        temp_pdf,
-        final_pdf,
-        vehicles[0]
-        )
+        output_pdf = (
+        f"output/used_vehicle_{index}_"
+        f"{safe_year}_{safe_make}_{safe_model}.pdf"
+    )
+        autofill_used_vehicle_form(
+        "templates/used_vehicle_form.pdf",
+        output_pdf,
+        vehicle
+    )
 
+
+    # flatten_pdf(filled_pdf, final_pdf)
 
     print("\n🚗 Extracted Vehicles:")
     for v in vehicles:
@@ -204,7 +261,7 @@ if __name__ == "__main__":
         import json
         json.dump(vehicles, f, indent=2)
 
-    print("\n✅ Day-3 vehicle extraction completed.")
+    # print("\n✅ Day-3 vehicle extraction completed.")
 
 
 
