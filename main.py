@@ -50,6 +50,10 @@ from reportlab.lib.pagesizes import A4
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+INVALID_MAKES = {
+    "make", "model", "year", "vehicle", "information", "vin"
+}
+
 
 def extract_text_ocr(pdf_path):
     full_text = ""
@@ -64,42 +68,114 @@ def extract_text_ocr(pdf_path):
 
 
 # -------- FIELD EXTRACTION -------- #
+import re
+
+INVALID_WORDS = {
+    "make", "model", "year", "state", "title",
+    "vehicle", "record", "information"
+}
+
+
+def clean_word(word):
+    if not word:
+        return None
+    word = word.strip(",.:; ")
+    if word.lower() in INVALID_WORDS:
+        return None
+    if len(word) < 3:
+        return None
+    return word
+
 
 def extract_vehicles(text):
     vehicles = []
 
-    blocks = re.split(r"VEHICLE INFORMATION", text, flags=re.IGNORECASE)
+    # 🚫 Ignore the blank used vehicle template page
+    if "USED VEHICLE RECORD" in text.upper():
+        text = text.split("USED VEHICLE RECORD")[0]
 
-    for block in blocks[1:]:
+    # Split on Vehicle Information blocks
+    blocks = re.split(
+        r"VEHICLE INFORMATION|Vehicle Information",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    for block in blocks:
         vehicle = {}
 
+        # -------- YEAR / MAKE / MODEL --------
         ym_match = re.search(
-            r"(\d{4})[, ]+([A-Z][A-Za-z]+)[, ]+([A-Z][A-Za-z]+)",
+            r"\b(19\d{2}|20\d{2})[, ]+([A-Za-z]{3,})[, ]+([A-Za-z]{3,})\b",
             block
         )
-        if ym_match:
-            vehicle["year"] = ym_match.group(1)
-            vehicle["make"] = ym_match.group(2)
-            vehicle["model"] = ym_match.group(3)
 
+        if ym_match:
+            year = ym_match.group(1)
+            make = clean_word(ym_match.group(2))
+            model = clean_word(ym_match.group(3))
+
+            if make and model:
+                vehicle["year"] = year
+                vehicle["make"] = make
+                vehicle["model"] = model
+
+        # -------- VIN (MANDATORY) --------
         vin_match = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", block)
         if vin_match:
             vehicle["vin"] = vin_match.group(0)
 
+        # -------- MILEAGE --------
         mileage_match = re.search(r"Mileage[:\s]+([\d,]+)", block, re.I)
         if mileage_match:
             vehicle["mileage"] = mileage_match.group(1).replace(",", "")
 
-        engine_match = re.search(r"(\d+[-\s]?Cylinder)", block, re.I)
+        # -------- ENGINE --------
+        engine_match = re.search(r"\b(\d+[-\s]?Cylinder)\b", block, re.I)
         if engine_match:
             vehicle["engine"] = engine_match.group(1)
 
-        # ✅ Validation filter
-        if "vin" in vehicle and vehicle.get("make", "").lower() != "make":
+        # # -------- TITLE INFO (STRICT) --------
+        # title_match = re.search(
+        #     r"Title\s*(State|Information)[^\n]*[:\-]\s*([A-Z]{2})\s*[/\-]\s*([A-Z0-9]{5,})",
+        #     block,
+        #     re.I
+        # )
+        # if title_match:
+        #     vehicle["title_state"] = title_match.group(2)
+        #     vehicle["title_no"] = title_match.group(3)
+
+               # -------- TITLE INFO (PAGE 1 FORMAT) --------
+        title_match_1 = re.search(
+            r"Title\s+State/Number:\s*([A-Z]{2})\s*/\s*([A-Z0-9]{3,})",
+            block,
+            re.I
+        )
+        if title_match_1:
+            vehicle["title_state"] = title_match_1.group(1)
+            vehicle["title_no"] = title_match_1.group(2)
+
+        # -------- TITLE INFO (PAGE 2 FORMAT) --------
+        title_match_2 = re.search(
+            r"Title\s+Information.*?State:\s*([A-Z]{2})\s*Number:\s*([A-Z0-9]+)",
+            block,
+            re.I | re.S
+        )
+        if title_match_2:
+            vehicle["title_state"] = title_match_2.group(1)
+            vehicle["title_no"] = title_match_2.group(2)
+
+        # -------- FINAL VALIDATION --------
+        if (
+            "vin" in vehicle
+            and "year" in vehicle
+            and "make" in vehicle
+            and "model" in vehicle
+        ):
             vehicles.append(vehicle)
 
-    # ✅ return AFTER loop
     return vehicles
+
 
 def fill_vehicle_pdf(template_pdf, output_pdf, vehicle):
     reader = PdfReader(template_pdf)
@@ -188,14 +264,14 @@ def autofill_used_vehicle_form(template_pdf, output_pdf, vehicle):
     reader = PdfReader(template_pdf)
     writer = PdfWriter()
 
-    # ✅ THIS IS CRITICAL
+    # Clone entire document (keeps form fields)
     writer.clone_document_from_reader(reader)
 
-    # ✅ Force appearance regeneration
+    # Force appearance regeneration
     if "/AcroForm" in writer._root_object:
         writer._root_object["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
 
-    # ✅ Fill text fields
+    # Fill form fields
     writer.update_page_form_field_values(
         writer.pages[0],
         {
@@ -203,6 +279,10 @@ def autofill_used_vehicle_form(template_pdf, output_pdf, vehicle):
             "make": vehicle.get("make", ""),
             "model": vehicle.get("model", ""),
             "vin": vehicle.get("vin", ""),
+
+            # ✅ NEW FIELDS
+            "state": vehicle.get("title_state", ""),
+            "title_no": vehicle.get("title_no", ""),
         }
     )
 
@@ -220,6 +300,8 @@ if __name__ == "__main__":
     os.makedirs("output", exist_ok=True)
 
     ocr_text = extract_text_ocr(pdf_path)
+
+    print("ocr text ",ocr_text)
 
     vehicles = extract_vehicles(ocr_text)
 
