@@ -183,8 +183,6 @@ def hard_flatten_pdf(filled_pdf, final_pdf, vehicle):
     c.save()
     print("✅ HARD-FLATTENED PDF CREATED:", final_pdf)
 
-from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, BooleanObject
 
 def autofill_used_vehicle_form(template_pdf, output_pdf, vehicle):
     reader = PdfReader(template_pdf)
