@@ -260,32 +260,59 @@ def hard_flatten_pdf(filled_pdf, final_pdf, vehicle):
     print("✅ HARD-FLATTENED PDF CREATED:", final_pdf)
 
 
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, BooleanObject
+
+
 def autofill_used_vehicle_form(template_pdf, output_pdf, vehicle):
     reader = PdfReader(template_pdf)
     writer = PdfWriter()
 
-    # Clone entire document (keeps form fields)
+    # Clone entire document (keeps all form fields)
     writer.clone_document_from_reader(reader)
 
     # Force appearance regeneration
     if "/AcroForm" in writer._root_object:
-        writer._root_object["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
+        writer._root_object["/AcroForm"][
+            NameObject("/NeedAppearances")
+        ] = BooleanObject(True)
 
-    # Fill form fields
+    # -------------------------------
+    # FIELD MAPPING (PDF → vehicle dict)
+    # -------------------------------
+    field_map = {
+        "model_year": "year",
+        "make": "make",
+        "model": "model",
+        "vin": "vin",
+        "engine_no": "engine",
+        "vehicle_color": "color",
+        "registration_no": "reg_no",
+
+        # Title info
+        "state": "title_state",
+        "title_no": "title_no",
+        "description":"description",
+        "altered_description":"altered_description"
+    }
+
+    # -------------------------------
+    # Build values dict (EMPTY if missing)
+    # -------------------------------
+    values_to_fill = {}
+
+    for pdf_field, vehicle_key in field_map.items():
+        values_to_fill[pdf_field] = str(vehicle.get(vehicle_key, ""))
+
+    # Fill fields (page 0 only – standard form behavior)
     writer.update_page_form_field_values(
         writer.pages[0],
-        {
-            "model_year": vehicle.get("year", ""),
-            "make": vehicle.get("make", ""),
-            "model": vehicle.get("model", ""),
-            "vin": vehicle.get("vin", ""),
-
-            # ✅ NEW FIELDS
-            "state": vehicle.get("title_state", ""),
-            "title_no": vehicle.get("title_no", ""),
-        }
+        values_to_fill
     )
 
+    # -------------------------------
+    # Write output
+    # -------------------------------
     with open(output_pdf, "wb") as f:
         writer.write(f)
 
