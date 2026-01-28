@@ -1,122 +1,128 @@
 import re
 
 INVALID_WORDS = {
-    "make", "model", "year", "state", "title",
-    "vehicle", "record", "information", "any", "no"
+    "any", "year", "make", "model", "vehicle",
+    "information", "number", "state", "title",
+    "invoice", "bill", "sale", "and", "of", "the"
 }
+
+COLORS = [
+    "Black", "White", "Silver", "Gray", "Grey",
+    "Blue", "Red", "Green", "Burgundy", "Yellow"
+]
 
 def clean_word(word):
     if not word:
         return None
-    word = word.strip(",.:; ")
-    if word.lower() in INVALID_WORDS:
+    w = word.strip(",.:; ").title()
+    if w.lower() in INVALID_WORDS:
         return None
-    if len(word) < 3:
+    if len(w) < 3:
         return None
-    return word
+    return w
 
 
-def extract_complete_vehicle_record(text):
+def extract_vehicle_from_page(text):
+    """
+    Extract ONE vehicle from ONE OCR page
+    """
+    vehicle = {}
+
+    # ---------- VIN (anchor – must exist) ----------
+    vin = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", text)
+    if not vin:
+        return None
+    vehicle["vin"] = vin.group(0)
+
+    # ---------- FORMAT 1: VEHICLE INFORMATION ----------
+    ym = re.search(
+        r"\b(19\d{2}|20\d{2})\s*,?\s*([A-Za-z]{3,})\s*,?\s*([A-Za-z]{3,})",
+        text
+    )
+    if ym:
+        vehicle["year"] = ym.group(1)
+        vehicle["make"] = clean_word(ym.group(2))
+        vehicle["model"] = clean_word(ym.group(3))
+
+    # ---------- FORMAT 2: LABELLED YEAR / MAKE / MODEL ----------
+    if "year" not in vehicle:
+        year = re.search(r"\bYear[:\s]+(19\d{2}|20\d{2})", text, re.I)
+        if year:
+            vehicle["year"] = year.group(1)
+
+    if "make" not in vehicle:
+        make = re.search(r"\bMake[:\s]+([A-Za-z]{3,})", text, re.I)
+        if make:
+            vehicle["make"] = clean_word(make.group(1))
+
+    if "model" not in vehicle:
+        model = re.search(r"\bModel[:\s]+([A-Za-z0-9]{2,})", text, re.I)
+        if model:
+            vehicle["model"] = clean_word(model.group(1))
+
+    # ---------- FORMAT 3: INVOICE SUBJECT ----------
+    subject = re.search(
+        r"Subject\s+(19\d{2}|20\d{2})\s+([A-Za-z]{3,})\s+([A-Za-z0-9]+)",
+        text,
+        re.I
+    )
+    if subject:
+        vehicle["year"] = subject.group(1)
+        vehicle["make"] = clean_word(subject.group(2))
+        vehicle["model"] = clean_word(subject.group(3))
+
+    # ---------- COLOR ----------
+    for c in COLORS:
+        if re.search(rf"\b{c}\b", text, re.I):
+            vehicle["color"] = c
+            break
+
+    # ---------- ENGINE ----------
+    engine = re.search(r"\b(V6|V8|\d+\s*Cylinder)\b", text, re.I)
+    if engine:
+        vehicle["engine"] = engine.group(1)
+
+    # ---------- MILEAGE / ODOMETER ----------
+    mileage = re.search(
+        r"(Mileage|Odometer)\s*[:\s]+([\d,]+)",
+        text,
+        re.I
+    )
+    if mileage:
+        vehicle["mileage"] = mileage.group(2).replace(",", "")
+
+    # ---------- TITLE STATE + NUMBER ----------
+    title = re.search(
+        r"(Title State/Number|Title Information|State:)\s*[:\-]?\s*([A-Z]{2})\s*[/\-]?\s*([A-Z0-9]{5,})",
+        text,
+        re.I
+    )
+    if title:
+        vehicle["title_state"] = title.group(2)
+        vehicle["title_no"] = title.group(3)
+
+    # ---------- ACQUISITION SOURCE ----------
+    seller = re.search(
+        r"(Seller|Purchased From|Obtained From)\s*[:\-]?\s*([A-Z][A-Z0-9 .,&'-]{5,40})",
+        text
+    )
+    if seller:
+        s = seller.group(2).strip()
+        if not re.search(r"(authorized|representative|bill|tax|payment)", s, re.I):
+            vehicle["acq_from"] = s
+
+    return vehicle
+
+
+def extract_complete_vehicle_record(pages_text):
+    """
+    pages_text = list of OCR text (one per page)
+    """
     vehicles = []
 
-    # 🚫 Ignore blank USED VEHICLE RECORD template page
-    if "USED VEHICLE RECORD" in text.upper():
-        text = text.split("USED VEHICLE RECORD")[0]
-
-    blocks = re.split(
-        r"VEHICLE INFORMATION|Vehicle Information|BILL OF SALE|Invoice",
-        text,
-        flags=re.I
-    )
-
-    for block in blocks:
-        vehicle = {}
-
-        # ---------------- YEAR / MAKE / MODEL ----------------
-        ym = re.search(
-            r"\b(19\d{2}|20\d{2})[, ]+([A-Za-z]{3,})[, ]+([A-Za-z]{3,})",
-            block
-        )
-        if ym:
-            year = ym.group(1)
-            make = clean_word(ym.group(2))
-            model = clean_word(ym.group(3))
-            if make and model:
-                vehicle["year"] = year
-                vehicle["make"] = make
-                vehicle["model"] = model
-
-        # ---------------- VIN (MANDATORY) ----------------
-        vin = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", block)
-        if vin:
-            vehicle["vin"] = vin.group(0)
-
-        # ---------------- ENGINE ----------------
-        engine = re.search(r"\b(\d+[- ]?Cylinder|V6|V8)\b", block, re.I)
-        if engine:
-            vehicle["engine"] = engine.group(1)
-
-        # ---------------- COLOR ----------------
-        color = re.search(
-            r"\b(Black|White|Silver|Gray|Blue|Red|Green|Burgundy|Yellow)\b",
-            block,
-            re.I
-        )
-        if color:
-            vehicle["color"] = color.group(1)
-
-        # ---------------- MILEAGE ----------------
-        mileage = re.search(r"Odometer[:\s]*([\d,]+)|Mileage[:\s]*([\d,]+)", block, re.I)
-        if mileage:
-            vehicle["mileage"] = (mileage.group(1) or mileage.group(2)).replace(",", "")
-
-        # ---------------- TITLE INFO ----------------
-        title = re.search(
-            r"Title\s*(State|Information).*?([A-Z]{2})\s*[/\-]\s*([A-Z0-9]{5,})",
-            block,
-            re.I
-        )
-        if title:
-            vehicle["title_state"] = title.group(2)
-            vehicle["title_no"] = title.group(3)
-
-        # ================= ACQUISITION SECTION =================
-
-        # -------- ACQUISITION DATE --------
-        date = re.search(
-            r"(Purchase Date|Acquired On|Transaction Date | Sale date)[:\s]*([\d/]{8,10})",
-            block,
-            re.I
-        )
-        if date:
-            vehicle["acq_date"] = date.group(2)
-
-        # -------- SELLER (HEADER ONLY – SAFE) --------
-        seller_block = re.search(
-            r"SELLER\s*:\s*\n([A-Z][A-Z &.,'-]{3,})",
-            text
-        )
-        if seller_block:
-            seller = seller_block.group(1).strip()
-
-            # Hard safety filter
-            if not re.search(r"(authorized|representative|bill|tax|payment)", seller, re.I):
-                vehicle["acq_from"] = seller
-
-        # -------- SELLER ADDRESS --------
-        address_block = re.search(
-            r"SELLER\s*:.*?\n.*?\n([0-9]{1,5}\s[A-Z0-9\s.,'-]+)\n([A-Z\s]+,\s[A-Z]{2}\s[0-9]{5})",
-            text,
-            re.S
-        )
-        if address_block:
-            vehicle["acq_address"] = (
-                address_block.group(1).strip() + ", " +
-                address_block.group(2).strip()
-            )
-
-        # ---------------- FINAL VALIDATION ----------------
-        if {"vin", "year", "make", "model"} <= vehicle.keys():
+    for idx, page_text in enumerate(pages_text, 1):
+        vehicle = extract_vehicle_from_page(page_text)
+        if vehicle:
             vehicles.append(vehicle)
 
     return vehicles
