@@ -1,43 +1,91 @@
+# overlay.py
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from PyPDF2 import PdfReader, PdfWriter
 import io
 
 
-FIELD_POSITIONS = {
-    "vin": (100, 650),
-    "year": (100, 630),
-    "make": (200, 630),
-    "model": (300, 630),
-    "mileage": (200, 610),
-
-    "acq_from": (100, 560),
-    "acq_address": (100, 540),
-    "acq_city": (100, 520),
-    "acq_state": (260, 520),
-    "acq_zip": (320, 520),
-
-    "purchased_for_resale": (100, 480),
-    "held_on_consignment": (260, 480),
-}
+def normalize_vin(vin):
+    return vin.strip().upper().replace(" ", "") if vin else ""
 
 
-def fill_vehicle_pdf(template_pdf, output_pdf, data):
+def draw_vin_boxes(c, vin, start_x, y):
+    vin = normalize_vin(vin)
+
+    FONT_NAME = "Courier"
+    FONT_SIZE = 10
+    BOX_WIDTH = 16.0
+    Y_OFFSET = -4.0
+
+    c.setFont(FONT_NAME, FONT_SIZE)
+
+    for i, ch in enumerate(vin):
+        box_left = start_x + (i * BOX_WIDTH)
+        char_width = stringWidth(ch, FONT_NAME, FONT_SIZE)
+        x_centered = box_left + (BOX_WIDTH - char_width) / 2
+        c.drawString(x_centered, y + Y_OFFSET, ch)
+
+
+# ✅ MATCHES main.py CALL
+def fill_vehicle_pdf(template_pdf, output_pdf, vehicle):
     packet = io.BytesIO()
-    can = canvas.Canvas(packet, pagesize=letter)
+    c = canvas.Canvas(packet, pagesize=letter)
+    c.setFont("Helvetica", 10)
 
-    for field, (x, y) in FIELD_POSITIONS.items():
-        if field in data:
-            can.drawString(x, y, str(data[field]))
+    # ================= VEHICLE INFO =================
+    if vehicle.get("year"):
+        c.drawString(140, 685, vehicle["year"])
 
-    can.save()
+    if vehicle.get("make"):
+        c.drawString(250, 685, vehicle["make"])
+
+    if vehicle.get("model"):
+        c.drawString(370, 685, vehicle["model"])
+
+    # ================= VIN =================
+    if vehicle.get("vin"):
+        draw_vin_boxes(
+            c,
+            vehicle["vin"],
+            start_x=123.0,
+            y=635.0
+        )
+
+    # ================= TITLE =================
+    if vehicle.get("title_no"):
+        c.drawString(100, 555, vehicle["title_no"])
+
+    if vehicle.get("title_state"):
+        c.drawString(260, 555, vehicle["title_state"])
+
+    # ================= ACQUISITION =================
+    if vehicle.get("acq_date"):
+        c.drawString(470, 450, vehicle["acq_date"])
+
+    if vehicle.get("acq_from"):
+        c.drawString(170, 450, vehicle["acq_from"])
+
+    if vehicle.get("acq_address"):
+        c.drawString(180, 423, vehicle["acq_address"])
+
+    city_state_zip = []
+    if vehicle.get("acq_city"):
+        c.drawString(120, 398, vehicle["acq_city"])
+    if vehicle.get("acq_state"):
+        c.drawString(290, 398, vehicle["acq_state"])
+    if vehicle.get("acq_zip"):
+        c.drawString(380, 398, vehicle["acq_zip"])
+
+    c.save()
     packet.seek(0)
 
+    # ================= MERGE WITH TEMPLATE =================
     overlay_pdf = PdfReader(packet)
-    base_pdf = PdfReader(template_pdf)
+    template = PdfReader(template_pdf)
     writer = PdfWriter()
 
-    page = base_pdf.pages[0]
+    page = template.pages[0]
     page.merge_page(overlay_pdf.pages[0])
     writer.add_page(page)
 
