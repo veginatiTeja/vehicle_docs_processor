@@ -1,47 +1,46 @@
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from PyPDF2 import PdfReader, PdfWriter
+import io
 
-VIN_BOX_WIDTH = 16
 
-def draw_vin_boxes_centered(c, vin, start_x, y):
-    for i, ch in enumerate(vin):
-        x = start_x + (i * VIN_BOX_WIDTH)
-        c.drawCentredString(x + VIN_BOX_WIDTH / 2, y, ch)
+FIELD_POSITIONS = {
+    "vin": (100, 650),
+    "year": (100, 630),
+    "make": (200, 630),
+    "model": (300, 630),
+    "color": (100, 610),
+    "mileage": (200, 610),
 
-def create_overlay(vehicle, output_pdf):
-    c = canvas.Canvas(output_pdf, pagesize=letter)
-    c.setFont("Helvetica", 9)
+    "acq_from": (100, 560),
+    "acq_address": (100, 540),
+    "acq_city": (100, 520),
+    "acq_state": (260, 520),
+    "acq_zip": (320, 520),
 
-    # ---- IDENTIFICATION ----
-    if vehicle.get("year"):
-        c.drawString(140, 685, vehicle["year"])
-    if vehicle.get("make"):
-        c.drawString(250, 685, vehicle["make"])
-    if vehicle.get("model"):
-        c.drawString(370, 685, vehicle["model"])
-    if vehicle.get("color"):
-        c.drawString(520, 685, vehicle["color"])
+    "purchased_for_resale": (100, 480),
+    "held_on_consignment": (260, 480),
+}
 
-    # ---- VIN ----
-    if vehicle.get("vin"):
-        draw_vin_boxes_centered(c, vehicle["vin"], start_x=130, y=632)
 
-    # ---- ENGINE ----
-    if vehicle.get("engine"):
-        c.drawString(430, 620, vehicle["engine"])
+def fill_vehicle_pdf(template_pdf, output_pdf, data):
+    packet = io.BytesIO()
+    can = canvas.Canvas(packet, pagesize=letter)
 
-    # ---- TITLE ----
-    if vehicle.get("title_no"):
-        c.drawString(100, 555, vehicle["title_no"])
-    if vehicle.get("title_state"):
-        c.drawString(260, 555, vehicle["title_state"])
+    for field, (x, y) in FIELD_POSITIONS.items():
+        value = data.get(field, "")
+        can.drawString(x, y, str(value))
 
-    # ---- ACQUISITION ----
-    if vehicle.get("acq_from"):
-        c.drawString(110, 470, vehicle["acq_from"])
-    if vehicle.get("acq_date"):
-        c.drawString(400, 470, vehicle["acq_date"])
-    if vehicle.get("mileage"):
-        c.drawString(480, 430, vehicle["mileage"])
+    can.save()
+    packet.seek(0)
 
-    c.save()
+    overlay_pdf = PdfReader(packet)
+    base_pdf = PdfReader(template_pdf)
+    writer = PdfWriter()
+
+    page = base_pdf.pages[0]
+    page.merge_page(overlay_pdf.pages[0])
+    writer.add_page(page)
+
+    with open(output_pdf, "wb") as f:
+        writer.write(f)

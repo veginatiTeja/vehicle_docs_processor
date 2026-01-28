@@ -1,150 +1,111 @@
 import re
+import pytesseract
+from pdf2image import convert_from_path
 
-# ---------------- CONSTANTS ----------------
 
-INVALID_WORDS = {
-    "any", "year", "make", "model", "vehicle",
-    "information", "number", "state", "title",
-    "invoice", "bill", "sale", "and", "of", "the"
+BUSINESS_KEYWORDS = {
+    "AUTO", "AUTOS", "MOTOR", "MOTORS", "SALES",
+    "LLC", "INC", "CORP", "COMPANY", "CO",
+    "GROUP", "DEALER", "USED", "CAR"
 }
 
-INVALID_SELLERS = [
-    "auction", "transactions", "seller purchaser",
-    "authorized representative", "terms and conditions",
-    "transferor", "buyer", "purchaser"
-]
 
-COLORS = [
-    "Black", "White", "Silver", "Gray", "Grey",
-    "Blue", "Red", "Green", "Burgundy", "Yellow"
-]
+def is_valid_seller_name(text):
+    if "," in text:
+        return False
+
+    words = text.split()
+
+    # Word count rule
+    if len(words) < 2 or len(words) > 5:
+        return False
+
+    # Each word must be meaningful
+    for w in words:
+        if len(w) < 3:
+            return False
+        if not w.isalpha():
+            return False
+
+    # Must contain business keyword
+    if not any(w.upper() in BUSINESS_KEYWORDS for w in words):
+        return False
+
+    return True
 
 
-# ---------------- HELPERS ----------------
+def extract_vehicle_data_from_pdf(pdf_path):
+    images = convert_from_path(pdf_path, dpi=300)
+    vehicles = []
 
-def clean_word(word):
-    if not word:
-        return None
-    w = word.strip(",.:; ").title()
-    if w.lower() in INVALID_WORDS or len(w) < 3:
-        return None
-    return w
+    for page_no, image in enumerate(images, start=1):
+        print(f"OCR page {page_no}")
+        text = pytesseract.image_to_string(image)
+        text_upper = text.upper()
 
+        vehicle = {}
 
-# ---------------- MAIN EXTRACTION ----------------
+        # ---------------- VIN ----------------
+        vin_match = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text_upper)
+        if not vin_match:
+            continue
 
-def extract_vehicle_from_page(text):
-    vehicle = {}
+        vin = vin_match.group(1)
+        vehicle["vin"] = vin
 
-    # ---------- VIN (MANDATORY ANCHOR) ----------
-    vin = re.search(r"\b[A-HJ-NPR-Z0-9]{17}\b", text)
-    if not vin:
-        return None
-    vehicle["vin"] = vin.group(0)
-
-    # ---------- YEAR / MAKE / MODEL (FORMAT 1) ----------
-    ym = re.search(
-        r"\b(19\d{2}|20\d{2})\s*,?\s*([A-Z]{3,})\s*,?\s*([A-Z0-9]{3,})",
-        text,
-        re.I
-    )
-    if ym:
-        vehicle["year"] = ym.group(1)
-        vehicle["make"] = clean_word(ym.group(2))
-        vehicle["model"] = clean_word(ym.group(3))
-
-    # ---------- YEAR ----------
-    year = re.search(r"\bYear[:\s]+(19\d{2}|20\d{2})", text, re.I)
-    if year:
-        vehicle["year"] = year.group(1)
-
-    # ---------- MAKE ----------
-    make = re.search(r"\bMake[:\s]+([A-Za-z]{3,})", text, re.I)
-    if make:
-        vehicle["make"] = clean_word(make.group(1))
-
-    # ---------- MODEL ----------
-    model = re.search(r"\bModel[:\s]+([A-Za-z0-9]{2,})", text, re.I)
-    if model:
-        vehicle["model"] = clean_word(model.group(1))
-
-    # ---------- MAKE FALLBACK (fixes Jeep=None) ----------
-    if not vehicle.get("make"):
-        make_alt = re.search(
-            r"\b(19\d{2}|20\d{2})\s*,?\s*([A-Z]{3,})\s*,",
-            text,
-            re.I
+        # ---------------- YEAR / MAKE / MODEL ----------------
+        ymm = re.search(
+            r"\b(19\d{2}|20\d{2})\s+([A-Z]{3,})\s+([A-Z0-9]{3,})",
+            text_upper
         )
-        if make_alt:
-            vehicle["make"] = make_alt.group(2).title()
+        if ymm:
+            vehicle["year"] = ymm.group(1)
+            vehicle["make"] = ymm.group(2).title()
 
-    # ---------- BLOCK VIN AS MODEL ----------
-    if vehicle.get("model") and re.fullmatch(r"[A-HJ-NPR-Z0-9]{11,}", vehicle["model"], re.I):
-        del vehicle["model"]
+            model = ymm.group(3)
+            if model != vin:
+                vehicle["model"] = model.title()
 
-    # ---------- COLOR ----------
-    for c in COLORS:
-        if re.search(rf"\b{c}\b", text, re.I):
-            vehicle["color"] = c
-            break
+        # ---------------- MILEAGE ----------------
+        mileage = re.search(r"MILEAGE[:\s]+([\d,]{3,})", text_upper)
+        if mileage:
+            vehicle["mileage"] = mileage.group(1).replace(",", "")
 
-    # ---------- ENGINE ----------
-    engine = re.search(r"\b(V6|V8|\d+\s*Cylinder)\b", text, re.I)
-    if engine:
-        vehicle["engine"] = engine.group(1)
+        # ---------------- ACQUISITION DATE ----------------
+        date = re.search(r"\b(\d{1,2}-[A-Z]{3}-\d{4})\b", text_upper)
+        if date:
+            vehicle["acq_date"] = date.group(1)
 
-    # ---------- MILEAGE ----------
-    mileage = re.search(r"(Mileage|Odometer).*?([\d,]{3,})", text, re.I)
-    if mileage:
-        vehicle["mileage"] = mileage.group(2).replace(",", "")
+        # ---------------- SELLER BLOCK ----------------
+        seller_block = re.search(
+            r"\bSELLER\b(.*?)(\bBUYER\b|$)",
+            text_upper,
+            re.S
+        )
 
-    # ---------- TITLE (FINAL SAFE VERSION) ----------
-    title = re.search(
-        r"(Title State/Number|State:)\s*[:\-]?\s*([A-Z]{2})\s*(?:/|Number:)?\s*([A-Z0-9]{5,})",
-        text,
-        re.I
-    )
-    if title:
-        title_no = title.group(3)
-        if not title_no.lower().startswith("number"):
-            vehicle["title_state"] = title.group(2)
-            vehicle["title_no"] = title_no
+        if seller_block:
+            block = seller_block.group(1)
 
-    # ---------- SELLER + ADDRESS (STRICT) ----------
-    seller = re.search(
-        r"\bSeller\b\s*\n\s*([A-Z][A-Z0-9 .,&'-]{5,50})",
-        text,
-        re.I
-    )
+            for line in block.splitlines():
+                clean = line.strip()
+                if is_valid_seller_name(clean):
+                    vehicle["acq_from"] = clean.title()
+                    break
 
-    if seller:
-        s = seller.group(1).strip()
-        if not any(bad in s.lower() for bad in INVALID_SELLERS):
-            vehicle["acq_from"] = s
-
-            # Address ONLY if seller exists
             address = re.search(
-                r"\bSeller\b.*?\n[A-Z0-9 .,&'-]+\n([0-9].+)\n([A-Z ]+),\s*([A-Z]{2})\s*(\d{5})",
-                text,
-                re.S
+                r"([0-9].+)\n([A-Z ]+),\s*([A-Z]{2})\s*(\d{5})",
+                block
             )
             if address:
-                vehicle["acq_address"] = address.group(1).strip()
+                vehicle["acq_address"] = address.group(1).title()
                 vehicle["acq_city"] = address.group(2).title()
                 vehicle["acq_state"] = address.group(3)
                 vehicle["acq_zip"] = address.group(4)
 
-    # ---------- TRANSACTION DATE ----------
-    date = re.search(
-        r"(Sale Date|Issue Date|Printed on|dated)\s*[:\-]?\s*([0-9]{1,2}[-/][A-Za-z]{3}[-/][0-9]{4}|[0-9]{2}/[0-9]{2}/[0-9]{2,4})",
-        text,
-        re.I
-    )
-    if date:
-        vehicle["acq_date"] = date.group(2)
+        # ---------------- DEFAULT FLAGS ----------------
+        vehicle["purchased_for_resale"] = "Yes"
+        vehicle["held_on_consignment"] = "No"
 
-    # ---------- BUSINESS DEFAULTS ----------
-    vehicle["purchased_for_resale"] = "Yes"
-    vehicle["held_on_consignment"] = "No"
+        vehicles.append(vehicle)
 
-    return vehicle
+    return vehicles
