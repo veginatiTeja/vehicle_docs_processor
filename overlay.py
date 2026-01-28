@@ -9,7 +9,6 @@ FIELD_POSITIONS = {
     "year": (100, 630),
     "make": (200, 630),
     "model": (300, 630),
-    "color": (100, 610),
     "mileage": (200, 610),
 
     "acq_from": (100, 560),
@@ -28,8 +27,8 @@ def fill_vehicle_pdf(template_pdf, output_pdf, data):
     can = canvas.Canvas(packet, pagesize=letter)
 
     for field, (x, y) in FIELD_POSITIONS.items():
-        value = data.get(field, "")
-        can.drawString(x, y, str(value))
+        if field in data:
+            can.drawString(x, y, str(data[field]))
 
     can.save()
     packet.seek(0)

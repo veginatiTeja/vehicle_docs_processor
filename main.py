@@ -21,10 +21,5 @@ for idx, vehicle in enumerate(vehicles, start=1):
 
     output_path = f"{OUTPUT_DIR}/used_vehicle_page_{idx}_{year}_{make}_{model}.pdf"
 
-    fill_vehicle_pdf(
-        TEMPLATE_PDF,
-        output_path,
-        vehicle
-    )
-
+    fill_vehicle_pdf(TEMPLATE_PDF, output_path, vehicle)
     print(f"✅ Auto-filled PDF created: {output_path}")

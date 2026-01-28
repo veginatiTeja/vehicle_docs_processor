@@ -2,12 +2,29 @@ import re
 import pytesseract
 from pdf2image import convert_from_path
 
-
 BUSINESS_KEYWORDS = {
     "AUTO", "AUTOS", "MOTOR", "MOTORS", "SALES",
     "LLC", "INC", "CORP", "COMPANY", "CO",
-    "GROUP", "DEALER", "USED", "CAR"
+    "GROUP", "DEALER", "USED", "CAR", "VOLKSWAGEN"
 }
+
+
+def extract_invoice_seller(text):
+    """
+    Extract seller from auction invoice header (Invoice to Buyer pages)
+    """
+    if "INVOICE TO BUYER" not in text:
+        return None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if "AUTO SALES" in line or "VOLKSWAGEN" in line:
+            parts = re.split(r"\s{2,}|\.", line)
+            parts = [p.strip() for p in parts if len(p.strip()) > 5]
+            if parts:
+                return parts[0].title()
+
+    return None
 
 
 def is_valid_seller_name(text):
@@ -15,23 +32,39 @@ def is_valid_seller_name(text):
         return False
 
     words = text.split()
-
-    # Word count rule
-    if len(words) < 2 or len(words) > 5:
+    if len(words) < 2 or len(words) > 6:
         return False
 
-    # Each word must be meaningful
     for w in words:
-        if len(w) < 3:
-            return False
         if not w.isalpha():
             return False
 
-    # Must contain business keyword
-    if not any(w.upper() in BUSINESS_KEYWORDS for w in words):
-        return False
+    return any(w.upper() in BUSINESS_KEYWORDS for w in words)
 
-    return True
+
+def extract_acquisition_date(text):
+    """
+    Priority:
+    1. Sale Date
+    2. Issue / Issued Date
+    3. Fallback generic date (last resort)
+    """
+    patterns = [
+        r"(SALE DATE|SALE\s*DT)\s*[:\-]?\s*(\d{1,2}[-/][A-Z]{3}[-/]\d{4})",
+        r"(ISSUE DATE|DATE ISSUED)\s*[:\-]?\s*(\d{1,2}[-/][A-Z]{3}[-/]\d{4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(2)
+
+    # Fallback – ONLY if invoice-specific date not found
+    fallback = re.search(r"\b(\d{1,2}[-/][A-Z]{3}[-/]\d{4})\b", text)
+    if fallback:
+        return fallback.group(1)
+
+    return None
 
 
 def extract_vehicle_data_from_pdf(pdf_path):
@@ -40,50 +73,55 @@ def extract_vehicle_data_from_pdf(pdf_path):
 
     for page_no, image in enumerate(images, start=1):
         print(f"OCR page {page_no}")
+
         text = pytesseract.image_to_string(image)
         text_upper = text.upper()
 
         vehicle = {}
 
-        # ---------------- VIN ----------------
+        # ---------- VIN ----------
         vin_match = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text_upper)
         if not vin_match:
             continue
 
-        vin = vin_match.group(1)
-        vehicle["vin"] = vin
+        vehicle["vin"] = vin_match.group(1)
 
-        # ---------------- YEAR / MAKE / MODEL ----------------
+        # ---------- YEAR / MAKE / MODEL ----------
         ymm = re.search(
-            r"\b(19\d{2}|20\d{2})\s+([A-Z]{3,})\s+([A-Z0-9]{3,})",
+            r"\b(19\d{2}|20\d{2})[,\s]+([A-Z]{3,})[,\s]+([A-Z0-9]{3,})",
             text_upper
         )
         if ymm:
             vehicle["year"] = ymm.group(1)
             vehicle["make"] = ymm.group(2).title()
-
             model = ymm.group(3)
-            if model != vin:
+            if model != vehicle["vin"]:
                 vehicle["model"] = model.title()
 
-        # ---------------- MILEAGE ----------------
-        mileage = re.search(r"MILEAGE[:\s]+([\d,]{3,})", text_upper)
-        if mileage:
-            vehicle["mileage"] = mileage.group(1).replace(",", "")
+        # ---------- TITLE ----------
+        title = re.search(r"TITLE STATE/NUMBER:\s*([A-Z]{2})/([A-Z0-9]+)", text_upper)
+        if title:
+            vehicle["title_state"] = title.group(1)
+            vehicle["title_no"] = title.group(2)
 
-        # ---------------- ACQUISITION DATE ----------------
-        date = re.search(r"\b(\d{1,2}-[A-Z]{3}-\d{4})\b", text_upper)
-        if date:
-            vehicle["acq_date"] = date.group(1)
+        # ---------- ACQUISITION DATE ----------
+        acq_date = extract_acquisition_date(text_upper)
+        if acq_date:
+            vehicle["acq_date"] = acq_date
 
-        # ---------------- SELLER BLOCK ----------------
+        # ---------- SELLER (Invoice Header) ----------
+        seller = extract_invoice_seller(text_upper)
+        if seller:
+            vehicle["acq_from"] = seller
+
+        # ---------- SELLER BLOCK ----------
         seller_block = re.search(
             r"\bSELLER\b(.*?)(\bBUYER\b|$)",
             text_upper,
             re.S
         )
 
-        if seller_block:
+        if seller_block and "acq_from" not in vehicle:
             block = seller_block.group(1)
 
             for line in block.splitlines():
@@ -102,7 +140,7 @@ def extract_vehicle_data_from_pdf(pdf_path):
                 vehicle["acq_state"] = address.group(3)
                 vehicle["acq_zip"] = address.group(4)
 
-        # ---------------- DEFAULT FLAGS ----------------
+        # ---------- FLAGS ----------
         vehicle["purchased_for_resale"] = "Yes"
         vehicle["held_on_consignment"] = "No"
 
