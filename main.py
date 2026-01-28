@@ -51,8 +51,9 @@ if __name__ == "__main__":
         vehicles.append(vehicle)
 
         year = vehicle.get("year", "YYYY")
-        make = vehicle.get("make", "UNKNOWN")
-        model = vehicle.get("model", "MODEL")
+        make = vehicle.get("make") or "UNKNOWN"
+        model = vehicle.get("model") or "MODEL"
+
 
         overlay_pdf = f"output/overlay_page_{page_no}.pdf"
         output_pdf = f"output/used_vehicle_page_{page_no}_{year}_{make}_{model}.pdf"
