@@ -8,6 +8,12 @@ BUSINESS_KEYWORDS = {
     "GROUP", "DEALER", "USED", "CAR", "VOLKSWAGEN"
 }
 
+KNOWN_COLORS = [
+    "BLACK", "WHITE", "SILVER", "GRAY", "GREY", "BLUE", "RED",
+    "GREEN", "YELLOW", "ORANGE", "BROWN", "GOLD", "BURGUNDY",
+    "MAROON", "BEIGE", "TAN", "PURPLE"
+]
+
 
 def extract_invoice_seller(text):
     """
@@ -145,6 +151,38 @@ def extract_vehicle_data_from_pdf(pdf_path):
             model = ymm.group(3)
             if model != vehicle["vin"]:
                 vehicle["model"] = model.title()
+
+        # -------------------------
+        # COLOR extraction
+        # -------------------------
+        color = None
+
+        # 1️⃣ Look for explicit COLOR field
+        m = re.search(r"COLOR[:\s]*([A-Z ]{3,20})", text_upper)
+        if m:
+            candidate = m.group(1).strip()
+            for c in KNOWN_COLORS:
+                if c in candidate:
+                    color = c.title()
+                    break
+
+        # 2️⃣ Search anywhere for known colors
+        if not color:
+            for c in KNOWN_COLORS:
+                if re.search(rf"\b{c}\b", text_upper):
+                    color = c.title()
+                    break
+
+        # 3️⃣ Vehicle info comma-based fallback
+        
+        if not color:
+            m = re.search(r"\d{4}[\s,]+[A-Z]+[\s,]+[A-Z0-9]+[\s,]+([A-Z]+)[\s,]", text_upper)
+            if m and m.group(1) in KNOWN_COLORS:
+                color = m.group(1).title()
+
+        if color:
+            vehicle["color"] = color
+
 
         # ---------- TITLE ----------
         title = re.search(r"TITLE STATE/NUMBER:\s*([A-Z]{2})/([A-Z0-9]+)", text_upper)

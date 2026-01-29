@@ -43,6 +43,9 @@ def fill_vehicle_pdf(template_pdf, output_pdf, vehicle):
     if vehicle.get("model"):
         c.drawString(370, 685, vehicle["model"])
 
+    if vehicle.get("color"):
+        c.drawString(500, 685, vehicle["color"])
+
     # ================= VIN =================
     if vehicle.get("vin"):
         draw_vin_boxes(
