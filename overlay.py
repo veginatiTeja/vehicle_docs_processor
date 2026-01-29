@@ -76,6 +76,10 @@ def fill_vehicle_pdf(template_pdf, output_pdf, vehicle):
         c.drawString(290, 398, vehicle["acq_state"])
     if vehicle.get("acq_zip"):
         c.drawString(380, 398, vehicle["acq_zip"])
+    if vehicle.get("acq_odometer_in"):
+        c.drawString(500, 398, vehicle["acq_odometer_in"])
+    if vehicle.get("acq_from"):
+        c.drawString(360, 320, vehicle["acq_from"])
 
     c.save()
     packet.seek(0)

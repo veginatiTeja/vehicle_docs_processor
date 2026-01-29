@@ -67,6 +67,54 @@ def extract_acquisition_date(text):
     return None
 
 
+# -----------------------------
+def extract_odometer(text):
+    print("Text ",text)
+    patterns = [
+    # ADESA header style: Odometer: 91,839 Miles
+    r"ODOMETER\s*[:\-]?\s*([\d,]{4,})\s*MILES",
+
+    # MILEAGE: 93464 MILES
+    r"MILEAGE\s*[:\-]?\s*([\d,]{4,})\s*MILES",
+
+    # OCR noisy variants
+    r"ODOMETER[^0-9]{0,15}([\d,]{4,})",
+    r"MILEAGE[^0-9]{0,15}([\d,]{4,})",
+]
+
+
+    for p in patterns:
+        m = re.search(p, text)
+        print("m after regex ",m)
+        if m:
+            return re.sub(r"[^\d]", "", m.group(1))
+
+    return None
+
+
+def extract_odometer_near_vin(text):
+    """
+    Try to extract odometer appearing on the same line
+    or nearby the VIN (common in ADESA invoices)
+    """
+    lines = text.splitlines()
+
+    for i, line in enumerate(lines):
+        if "VIN:" in line or "VIN" in line:
+            # check same line
+            m = re.search(r"([\d,]{4,})\s*MILES", line)
+            if m:
+                return m.group(1).replace(",", "")
+
+            # check next 2 lines
+            for j in range(i + 1, min(i + 3, len(lines))):
+                m = re.search(r"([\d,]{4,})\s*MILES", lines[j])
+                if m:
+                    return m.group(1).replace(",", "")
+    return None
+
+
+
 def extract_vehicle_data_from_pdf(pdf_path):
     images = convert_from_path(pdf_path, dpi=300)
     vehicles = []
@@ -140,6 +188,18 @@ def extract_vehicle_data_from_pdf(pdf_path):
                 vehicle["acq_state"] = address.group(3)
                 vehicle["acq_zip"] = address.group(4)
 
+
+           # ---- ODOMETER (Vehicle Info → Acquisition) ----
+        
+        
+        odometer = extract_odometer(text_upper)
+
+       # Fallback: VIN-adjacent odometer (ADESA style)
+        if not odometer:
+            odometer = extract_odometer_near_vin(text_upper)
+        
+        if odometer and "acq_odometer_in" not in vehicle:
+            vehicle["acq_odometer_in"] = odometer
         # ---------- FLAGS ----------
         vehicle["purchased_for_resale"] = "Yes"
         vehicle["held_on_consignment"] = "No"
