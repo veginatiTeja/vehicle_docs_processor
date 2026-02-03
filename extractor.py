@@ -118,50 +118,40 @@ def extract_acquisition_details(text):
                 result["acq_address"] = line.title()
                 break
 
-    # ---------------- ACQ_FROM ----------------
-    header = lines[:20]
+    # ---------------- ACQ_FROM (ROBUST) ----------------
+    header = lines[:25]
 
-    manheim_seen = False
-    manheim_region = None
+    manheim_found = False
+    region_words = []
 
     for line in header:
         cu = line.upper()
 
         if "MANHEIM" in cu:
-            manheim_seen = True
+            manheim_found = True
 
-        if "NEW ENGLAND" in cu:
-            manheim_region = "New England"
+        if manheim_found:
+            if "NEW" in cu:
+                region_words.append("New")
+            if "ENGLAND" in cu:
+                region_words.append("England")
 
-    if manheim_seen:
-        result["acq_from"] = (
-            f"Manheim {manheim_region}".strip()
-            if manheim_region else "Manheim"
-        )
+    if manheim_found:
+        if region_words:
+            result["acq_from"] = "Manheim " + " ".join(dict.fromkeys(region_words))
+        else:
+            result["acq_from"] = "Manheim"
         return result
 
-    banned = [
-        "VOLKSWAGEN", "FORD", "TOYOTA", "HONDA", "CHEVROLET",
-        "USED AUTO", "CAR CARE", "MOTORS", "SALES INC",
-        "NOT VALID", "EXPORT", "ODOMETER", "DISCLOSURE",
-        "BUYER", "SELLER", "INVOICE", "BILL OF SALE",
-        "STATEMENT", "SIGNATURE"
-    ]
-
+    # --------- FALLBACK AUCTIONS ---------
     for line in header:
         cu = line.upper()
-
-        if not re.fullmatch(r"[A-Z][A-Z '&.\-]{5,}", cu):
-            continue
-
-        if any(b in cu for b in banned):
-            continue
-
-        if not any(k in cu for k in ["AUCTION", "AUTO", "ADESA"]):
-            continue
-
-        result["acq_from"] = line.title()
-        break
+        if "ADESA" in cu:
+            result["acq_from"] = line.title()
+            break
+        if "CENTRAL MASS" in cu:
+            result["acq_from"] = "Central Mass. Auto Auction"
+            break
 
     return result if result else None
 
