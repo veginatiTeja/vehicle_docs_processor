@@ -2,75 +2,43 @@ import re
 import pytesseract
 from pdf2image import convert_from_path
 
-BUSINESS_KEYWORDS = {
-    "AUTO", "AUTOS", "MOTOR", "MOTORS", "SALES",
-    "LLC", "INC", "CORP", "COMPANY", "CO",
-    "GROUP", "DEALER", "USED", "CAR", "VOLKSWAGEN"
-}
+# ================== HELPERS ==================
+
+
+def clean_text(text: str) -> str:
+    return re.sub(r'\s+', ' ', text).strip()
+
 
 KNOWN_COLORS = [
     "BLACK", "WHITE", "SILVER", "GRAY", "GREY", "BLUE", "RED",
-    "GREEN", "YELLOW", "ORANGE", "BROWN", "GOLD", "BURGUNDY",
-    "MAROON", "BEIGE", "TAN", "PURPLE"
+    "GREEN", "YELLOW", "ORANGE", "BROWN", "GOLD",
+    "BURGUNDY", "MAROON", "BEIGE", "TAN", "PURPLE"
 ]
 
 
-# ---------------- SELLER HELPERS ---------------- #
+def is_central_mass_auction(text):
+    return "CENTRAL MASS. AUTO AUCTION" in text.upper()
 
-def extract_invoice_seller(text):
-    if "INVOICE TO BUYER" not in text:
-        return None
 
-    for line in text.splitlines():
-        line = line.strip()
-        if "AUTO SALES" in line or "VOLKSWAGEN" in line:
-            parts = re.split(r"\s{2,}|\.", line)
-            parts = [p.strip() for p in parts if len(p.strip()) > 4]
-            if parts:
-                return parts[0].title()
+# ================== BASIC EXTRACTORS ==================
+
+def extract_color(text):
+    for c in KNOWN_COLORS:
+        if re.search(rf"\b{c}\b", text):
+            return c.title()
     return None
 
 
-def is_valid_seller_name(text):
-    if "," in text:
-        return False
-
-    words = text.split()
-    if len(words) < 2 or len(words) > 7:
-        return False
-
-    for w in words:
-        if not w.isalpha():
-            return False
-
-    return any(w.upper() in BUSINESS_KEYWORDS for w in words)
-
-
-# ---------------- DATE ---------------- #
-
 def extract_acquisition_date(text):
-    patterns = [
-        r"(SALE DATE|NEW SALE DATE)\s*[:\-]?\s*(\d{1,2}[-/][A-Z]{3}[-/]\d{4})",
-        r"(ISSUE DATE)\s*[:\-]?\s*(\d{1,2}[-/][A-Z]{3}[-/]\d{4})",
-    ]
+    m = re.search(r"\b(\d{1,2}[-/][A-Z]{3}[-/]\d{4})\b", text)
+    return m.group(1) if m else None
 
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            return m.group(2)
-
-    fallback = re.search(r"\b(\d{1,2}[-/][A-Z]{3}[-/]\d{4})\b", text)
-    return fallback.group(1) if fallback else None
-
-
-# ---------------- ODOMETER ---------------- #
 
 def extract_odometer(text):
     patterns = [
-        r"MILEAGE\s*[:\-]?\s*([\d,]{4,})\s*MILES",
-        r"ODOMETER[^0-9]{0,15}([\d,]{4,})"
+        r"MILEAGE\s*[:\-]?\s*([\d,]{4,})",
+        r"ODOMETER[^0-9]{0,20}([\d,]{4,})",
     ]
-
     for p in patterns:
         m = re.search(p, text)
         if m:
@@ -78,7 +46,101 @@ def extract_odometer(text):
     return None
 
 
-# ---------------- MAIN ---------------- #
+# ================== SELLER EXTRACTORS ==================
+
+def extract_carmax_seller(text):
+    m = re.search(r'CarMax\s*-\s*([A-Z\s]+)', text, re.I)
+    if not m:
+        return None
+    return {"acq_from": f"CarMax - {m.group(1).title()}"}
+
+
+def extract_manheim_seller(text):
+    m = re.search(
+        r'Seller\s*\n\s*(.*?)\n\s*(\d{2,5}.*?)\n\s*([A-Z\s]+),\s*([A-Z]{2})\s*(\d{5})',
+        text,
+        re.S | re.I
+    )
+    if not m:
+        return None
+
+    return {
+        "acq_from": clean_text(m.group(1)).title(),
+        "acq_address": clean_text(m.group(2)).title(),
+        "acq_city": clean_text(m.group(3)).title(),
+        "acq_state": m.group(4).upper(),
+        "acq_zip": m.group(5),
+    }
+
+
+def extract_adesa_page1_seller(text):
+    m = re.search(r'Invoice to Buyer\s+(.*?)\n', text, re.I)
+    if not m:
+        return None
+
+    line = m.group(1)
+    seller = line.split('.')[0] if '.' in line else line
+    return seller.strip().title()
+
+
+# ================== MODEL FALLBACK ==================
+
+def extract_fuzzy_model(text):
+    """
+    Handles OCR corruption like:
+    'Mode}! Passat' → Passat
+    """
+    m = re.search(r'MOD[A-Z\W]{1,5}\s*([A-Z]{3,})', text)
+    if m:
+        return m.group(1).title()
+    return None
+
+# ================= TITLE STATE & TITLE NUMBER =================
+
+import re
+
+def extract_title_info(text):
+    text = text.upper()
+
+    title_state = None
+    title_no = None
+
+    # Pattern 1: "TITLE STATE/NUMBER MA BM759181"
+    m1 = re.search(
+        r"(TITLE STATE/NUMBER|TITLE INFORMATION|STATE:)\s*[:\-]?\s*"
+        r"([A-Z]{2})\s*[/\-]?\s*([A-Z0-9]{5,})",
+        text,
+        re.I
+    )
+    print("m1 ",m1)
+  
+    if m1:
+        ts = m1.group(2)
+        tn = m1.group(3)
+
+        # ✅ title number MUST contain at least one digit
+        if re.search(r"\d", tn):
+            return ts, tn
+
+    # Pattern 2: "TITLE NO: BM759181"
+    m2 = re.search(
+        r"\bTITLE\s*(NO|NUMBER|#)?\s*[:\-]?\s*([A-Z0-9]{6,})\b",
+        text,
+        re.I
+    )
+
+    print("m2 ",m2)
+
+    if m2:
+        tn = m2.group(2)
+
+        # ❌ reject words like NUMBER, TITLE, etc.
+        if re.search(r"\d", tn):
+            return None, tn
+
+    return None, None
+
+# ================== MAIN PIPELINE ==================
 
 def extract_vehicle_data_from_pdf(pdf_path):
     images = convert_from_path(pdf_path, dpi=300)
@@ -86,86 +148,88 @@ def extract_vehicle_data_from_pdf(pdf_path):
 
     for page_no, image in enumerate(images, start=1):
         print(f"OCR page {page_no}")
+
         text = pytesseract.image_to_string(image)
         text_upper = text.upper()
 
+        # -------- VIN --------
         vin_match = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text_upper)
         if not vin_match:
             continue
 
         vehicle = {"vin": vin_match.group(1)}
 
-        # -------- YEAR / MAKE / MODEL -------- #
-        ymm = re.search(r"\b(19\d{2}|20\d{2})[,\s]+([A-Z]{3,})[,\s]+([A-Z0-9]{3,})", text_upper)
+        # -------- YEAR / MAKE / MODEL --------
+
+        ymm_comma = re.search(
+            r"\b(19\d{2}|20\d{2})\s*,\s*([A-Z]{3,})\s*,\s*([A-Z0-9]{3,})",
+            text_upper
+        )
+
+        ymm_space = re.search(
+            r"\b(19\d{2}|20\d{2})\s+([A-Z]{3,})\s+([A-Z0-9]{3,})",
+            text_upper
+        )
+
+        ymm_labeled = re.search(
+            r"YEAR\s*(19\d{2}|20\d{2}).*?MAKE\s*([A-Z]{3,}).*?MODEL\s*([A-Z0-9]{3,})",
+            text_upper,
+            re.S
+        )
+
+        ymm = ymm_comma or ymm_space or ymm_labeled
+
         if ymm:
             vehicle["year"] = ymm.group(1)
             vehicle["make"] = ymm.group(2).title()
-            if ymm.group(3) != vehicle["vin"]:
+            if len(ymm.group(3)) < 12:
                 vehicle["model"] = ymm.group(3).title()
 
-        # -------- COLOR -------- #
-        for c in KNOWN_COLORS:
-            if re.search(rf"\b{c}\b", text_upper):
-                vehicle["color"] = c.title()
-                break
+        # -------- FUZZY MODEL FALLBACK --------
+        if "model" not in vehicle:
+            fuzzy_model = extract_fuzzy_model(text_upper)
+            if fuzzy_model:
+                vehicle["model"] = fuzzy_model
+
+        # -------- COLOR --------
+        color = extract_color(text_upper)
+        if color:
+            vehicle["color"] = color
 
         # -------- TITLE -------- #
-        title = re.search(r"TITLE STATE/NUMBER:\s*([A-Z]{2})/([A-Z0-9]+)", text_upper)
-        if title:
-            vehicle["title_state"] = title.group(1)
-            vehicle["title_no"] = title.group(2)
+        title_state, title_no = extract_title_info(text_upper)
+        if title_no:
+            vehicle["title_no"] = title_no
 
-        # -------- DATE -------- #
+        if title_state:
+            vehicle["title_state"] = title_state
+
+
+        # -------- DATE --------
         acq_date = extract_acquisition_date(text_upper)
         if acq_date:
             vehicle["acq_date"] = acq_date
 
-        # -------- SELLER BLOCK (PAGE 2 PRIORITY) -------- #
-        seller_block = re.search(r"\bSELLER\b(.*?)(\bBUYER\b|$)", text_upper, re.S)
-        if seller_block:
-            block = seller_block.group(1)
-            lines = [l.strip() for l in block.splitlines() if l.strip()]
-            seller_name = None
+        # -------- SELLER PRIORITY --------
+        seller = extract_carmax_seller(text)
+        if seller:
+            vehicle.update(seller)
 
-    # 1️⃣ Try strict business-name detection first
-            for line in lines:
-                if is_valid_seller_name(line):
-                    seller_name = line.title()
-                    break
+        elif not is_central_mass_auction(text):
+            seller = extract_manheim_seller(text)
+            if seller:
+                vehicle.update(seller)
+            else:
+                seller_name = extract_adesa_page1_seller(text)
+                if seller_name:
+                    vehicle["acq_from"] = seller_name
 
-    # 2️⃣ If not found, fallback: line before address
-        addr_index = -1
-        for i, line in enumerate(lines):
-            if re.search(r"\d{3,}.*(ST|RD|AVE|TPKE|ROAD|STREET)", line):
-                addr_index = i
-                break
-
-        if not seller_name and addr_index > 0:
-            seller_name = lines[addr_index - 1].title()
-
-        if seller_name:
-            vehicle["acq_from"] = seller_name
-
-    # -------- Address extraction (unchanged) --------
-        addr = re.search(r"([0-9].+)\n([A-Z ]+),\s*([A-Z]{2})\s*(\d{5})", block)
-        if addr:
-            vehicle["acq_address"] = addr.group(1).title()
-            vehicle["acq_city"] = addr.group(2).title()
-            vehicle["acq_state"] = addr.group(3)
-            vehicle["acq_zip"] = addr.group(4)
-
-        # -------- INVOICE SELLER (PAGE 1 FALLBACK) -------- #
-        if "acq_from" not in vehicle:
-            invoice_seller = extract_invoice_seller(text_upper)
-            if invoice_seller:
-                vehicle["acq_from"] = invoice_seller
-
-        # -------- ODOMETER -------- #
+        # -------- ODOMETER --------
         odo = extract_odometer(text_upper)
         if odo:
             vehicle["acq_odometer_in"] = odo
 
-        # -------- FLAGS -------- #
+        # -------- FLAGS --------
         vehicle["purchased_for_resale"] = "Yes"
         vehicle["held_on_consignment"] = "No"
 
