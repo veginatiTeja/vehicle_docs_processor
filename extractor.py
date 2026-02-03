@@ -81,20 +81,19 @@ import re
 def extract_acquisition_details(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     text_u = text.upper()
-
     result = {}
 
-    # ---------- DATE ----------
+    # ---------------- DATE ----------------
     m = re.search(r"\b(\d{1,2}[-/][A-Z]{3}[-/]\d{4})\b", text_u)
     if m:
         result["acq_date"] = m.group(1)
 
-    # ---------- ODOMETER ----------
-    m = re.search(r"(MILEAGE|ODOMETER)[^0-9]{0,25}([\d,]{4,})", text_u)
+    # ---------------- ODOMETER ----------------
+    m = re.search(r"(MILEAGE|ODOMETER)[^0-9]{0,20}([\d,]{4,})", text_u)
     if m:
         result["acq_odometer_in"] = re.sub(r"[^\d]", "", m.group(2))
 
-    # ---------- CITY / STATE / ZIP ----------
+    # ---------------- CITY / STATE / ZIP ----------------
     city = state = zipc = None
     for line in lines:
         m = re.search(r"([A-Z ]+),\s*([A-Z]{2})\s*(\d{5})", line.upper())
@@ -102,93 +101,69 @@ def extract_acquisition_details(text):
             city = m.group(1).title()
             state = m.group(2)
             zipc = m.group(3)
-
             result["acq_city"] = city
             result["acq_state"] = state
             result["acq_zip"] = zipc
             break
 
-    # ---------- STREET ADDRESS ----------
+    # ---------------- STREET ADDRESS ----------------
     for line in lines:
         lu = line.upper()
+        if re.match(r"\d{1,6}\s+[A-Z0-9 ]+", lu):
+            if any(w in lu for w in ["SALE", "DATE", "AUCTION", "INVOICE", "ODOMETER"]):
+                continue
+            if re.search(r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b", lu):
+                continue
+            if 2 <= len(line.split()) <= 6:
+                result["acq_address"] = line.title()
+                break
 
-        if not re.match(r"\d{1,6}\s+[A-Z0-9 ]+", lu):
-            continue
+    # ---------------- ACQ_FROM ----------------
+    header = lines[:20]
 
-        if any(w in lu for w in [
-            "INVOICE", "SALE", "DATE", "ODOMETER",
-            "DISCLOSURE", "TITLE", "MILEAGE", "STATEMENT"
-        ]):
-            continue
+    manheim_seen = False
+    manheim_region = None
 
-        if re.search(r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b", lu):
-            continue
-
-        if 2 <= len(line.split()) <= 6:
-            result["acq_address"] = line.title()
-            break
-
-    # ---------- SELLER (STRICT + PRIORITY) ----------
-
-    # 🚩 HARD BLOCK LIST
-    banned_exact = [
-        "ODOMETER DISCLOSURE STATEMENT",
-        "INVOICE TO BUYER",
-        "BUYER AGREES",
-        "SELLER AGREES",
-        "TERMS AND CONDITIONS"
-    ]
-
-    banned_keywords = [
-        "INVOICE", "DISCLOSURE", "STATEMENT", "ODOMETER",
-        "BUYER", "SELLER", "AGREES", "ACKNOWLEDGES",
-        "TRANSACTION", "TAX", "TERMS", "CONDITIONS",
-        "AUTHORIZED", "REPRESENTATIVE"
-    ]
-
-    # 1️⃣ PRIORITY: ADESA / MANHEIM (cleaned)
-    for line in lines:
+    for line in header:
         cu = line.upper()
 
-        if "ADESA" in cu:
-            result["acq_from"] = "Adesa Boston"
-            return result
-
         if "MANHEIM" in cu:
-            result["acq_from"] = "Manheim New England"
-            return result
+            manheim_seen = True
 
-    # 2️⃣ FALLBACK: Dealer / Auction Name
-    for line in lines:
-        cand = line.strip()
-        cu = cand.upper()
+        if "NEW ENGLAND" in cu:
+            manheim_region = "New England"
 
-        if cu in banned_exact:
+    if manheim_seen:
+        result["acq_from"] = (
+            f"Manheim {manheim_region}".strip()
+            if manheim_region else "Manheim"
+        )
+        return result
+
+    banned = [
+        "VOLKSWAGEN", "FORD", "TOYOTA", "HONDA", "CHEVROLET",
+        "USED AUTO", "CAR CARE", "MOTORS", "SALES INC",
+        "NOT VALID", "EXPORT", "ODOMETER", "DISCLOSURE",
+        "BUYER", "SELLER", "INVOICE", "BILL OF SALE",
+        "STATEMENT", "SIGNATURE"
+    ]
+
+    for line in header:
+        cu = line.upper()
+
+        if not re.fullmatch(r"[A-Z][A-Z '&.\-]{5,}", cu):
             continue
 
-        if any(k in cu for k in banned_keywords):
+        if any(b in cu for b in banned):
             continue
 
-        if city and city.upper() in cu:
+        if not any(k in cu for k in ["AUCTION", "AUTO", "ADESA"]):
             continue
 
-        if state and state in cu:
-            continue
-
-        if re.search(r"\d", cu):
-            continue
-
-        if not re.fullmatch(r"[A-Z][A-Z '&.\-]{4,}", cu):
-            continue
-
-        words = cand.split()
-        if not (2 <= len(words) <= 6):
-            continue
-
-        result["acq_from"] = cand.title()
+        result["acq_from"] = line.title()
         break
 
-    return result
+    return result if result else None
 
 
 # ================== MAIN PIPELINE ==================
